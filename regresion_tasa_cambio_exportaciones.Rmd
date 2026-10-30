@@ -1,0 +1,326 @@
+---
+title: "Ejercicio de modelos de regresión lineal"
+subtitle: "Tasa de cambio de venta del dólar estadounidense y exportaciones mensuales"
+author: "Pablo Cambria"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r configuracion, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+# Introducción
+
+Este ejercicio construye un modelo de regresión lineal simple para analizar la relación entre las **exportaciones mensuales** y la **tasa de cambio de venta promedio mensual del dólar estadounidense**, durante el período enero de 2023 a septiembre de 2025.
+
+De acuerdo con el planteamiento del ejercicio, la variable que se busca explicar es la tasa de cambio de venta. Por ello, se define el modelo de la siguiente manera:
+
+\[
+Venta_i = \beta_0 + \beta_1 Exportaciones_i + \varepsilon_i
+\]
+
+Donde:
+
+- **Variable dependiente (Y):** `Venta`, correspondiente a la tasa de cambio de venta promedio mensual, expresada en pesos dominicanos por dólar estadounidense.
+- **Variable independiente (X):** `Exportaciones`, correspondiente a las exportaciones mensuales, expresadas en millones de dólares estadounidenses.
+
+# Declaración de uso de inteligencia artificial
+
+Para elaborar este trabajo se utilizó **ChatGPT, modelo GPT-5.5 Thinking**, como apoyo para la revisión, organización y ajuste puntual del código en R, así como para mejorar la presentación de algunos gráficos. El código base, la obtención y preparación de los datos, la ejecución del análisis y la generación de los gráficos fueron realizados por el autor.
+
+Las interpretaciones del modelo y de los gráficos fueron elaboradas por el autor, tomando como referencia las explicaciones impartidas por el profesor en clase. Adicionalmente, la inteligencia artificial se utilizó para organizar el documento en formato R Markdown y realizar una revisión ortográfica. El autor revisó el resultado final y asume la responsabilidad por el contenido, las decisiones analíticas y cualquier error que pudiera permanecer.
+
+# Importación, preparación y consolidación de datos
+
+Los archivos de tasa de cambio y exportaciones deben estar ubicados en la misma carpeta de trabajo que este documento R Markdown. Se utilizaron observaciones mensuales de enero de 2023 a septiembre de 2025, para un total de 33 meses.
+
+```{r importacion-y-preparacion}
+#importacion de la data
+library(readxl)
+library(dplyr)
+library(GGally)
+library(ggplot2)
+tasa_dolar <- read_excel("tasa_cambio_venta_usd.xlsx", skip = 2, sheet = "PromMensual")
+tasa_dolar_filtrado <- tasa_dolar[457:489, ]
+tasa_dolar_filtrado$Fecha<- paste(tasa_dolar_filtrado$Año, 
+                                  tasa_dolar_filtrado$Mes,
+                                  sep = "-")
+exp_2023 <- read_excel("Exportaciones_Mensuales_2023_6.xls")
+exportaciones_2023_filtered <- exp_2023[c(8,71),3:14]
+
+exportaciones_2023 <- data.frame(
+  Fecha = paste0("2023-", as.character(unlist(exportaciones_2023_filtered[1, ]))),
+  Exportaciones = as.numeric(unlist(exportaciones_2023_filtered[2, ]))
+)
+
+exp_2024 <- read_excel("Exportaciones_Mensuales_2024_6.xls")
+exportaciones_2024_filtered <- exp_2024[c(8,71),3:14]
+exportaciones_2024 <- data.frame(
+  Fecha = paste0("2024-", as.character(unlist(exportaciones_2024_filtered[1, ]))),
+  Exportaciones = as.numeric(unlist(exportaciones_2024_filtered[2, ]))
+)
+
+exp_2025 <- read_excel("Exportaciones_Mensuales_2025_6.xls")
+exportaciones_2025_filtered <- exp_2025[c(8,71),3:11]
+exportaciones_2025 <- data.frame(
+  Fecha = paste0("2025-", as.character(unlist(exportaciones_2025_filtered[1, ]))),
+  Exportaciones = as.numeric(unlist(exportaciones_2025_filtered[2, ]))
+)
+
+exportaciones <- rbind(exportaciones_2023
+                       ,exportaciones_2024
+                       ,exportaciones_2025)
+
+data <- inner_join(tasa_dolar_filtrado, exportaciones, by = "Fecha")
+
+data <- data %>% 
+  select(Fecha,Venta,Exportaciones)
+
+meses_es <- c("Ene","Feb","Mar","Abr","May","Jun",
+              "Jul","Ago","Sep","Oct","Nov","Dic")
+
+mes <- match(sub(".*-", "", data$Fecha), meses_es)
+
+data$Fecha <- as.Date(
+  paste0(sub("-.*", "", data$Fecha), "-", sprintf("%02d", mes), "-01")
+)
+str(data)
+```
+
+```{r vista-de-los-datos}
+head(data)
+tail(data)
+summary(data[, c("Venta", "Exportaciones")])
+```
+
+La base consolidada contiene 33 observaciones mensuales. La variable `Venta` corresponde a la tasa promedio mensual de venta, mientras que `Exportaciones` representa el valor mensual exportado en millones de dólares estadounidenses.
+
+# Exploración inicial de las variables
+
+## Matriz de correlación
+
+```{r matriz-correlacion, fig.height=7}
+ggpairs(data=data, columns=1:3, title="Correlación de Variables")
+#Alta correlación de la tasa de cambio de dolar estadounidensecon respecto 
+#al peso dominicano y la fecha. Pero lo que realmente esto explica es que durante
+#el tiempo, el dolar ha crecido.
+```
+
+La matriz de correlación muestra una asociación positiva entre `Venta` y `Exportaciones` (aproximadamente **0.446**). Esta relación es moderada y positiva: los meses con exportaciones mayores tienden a coincidir con una tasa de cambio de venta más alta. Sin embargo, la correlación no demuestra causalidad.
+
+También se observa una relación elevada entre la fecha y la tasa de cambio de venta. Esta asociación debe interpretarse con cautela, ya que describe principalmente la tendencia creciente de la tasa de cambio a lo largo del período analizado y no una relación causal por sí misma.
+
+## Evolución temporal de las series
+
+```{r evolucion-temporal}
+#Evolución de la tasa de cambio y las exportaciones
+escala <- max(data$Venta) / max(data$Exportaciones)
+
+ggplot(data, aes(x = Fecha)) +
+  geom_line(aes(y = Venta, color = "Tasa de Cambio"), linewidth = 1) +
+  geom_line(aes(y = Exportaciones * escala, color = "Exportaciones"), linewidth = 1) +
+  
+  # Eje Y doble
+  scale_y_continuous(
+    name = "Tasa de Cambio (pesos por USD)",
+    sec.axis = sec_axis(~ . / escala, name = "Exportaciones (millones USD)")
+  ) +
+  
+  scale_x_date(
+    date_labels = "%Y-%m",
+    date_breaks = "1 month"
+  ) +
+  
+  scale_color_manual(
+    values = c("Exportaciones" = "steelblue", 
+               "Tasa de Cambio" = "darkred")
+  ) +
+  
+  labs(
+    title = "Evolución de la tasa de cambio y las exportaciones",
+    x = "Fecha",
+    y = "",
+    color = ""
+  ) +
+  
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+La tasa de cambio de venta presenta una disminución inicial durante 2023 y, posteriormente, una tendencia general ascendente hasta septiembre de 2025. Las exportaciones muestran una mayor variabilidad mensual, con aumentos y disminuciones más marcados. El gráfico de doble eje permite comparar visualmente ambas trayectorias, pero sus escalas son distintas; por esa razón, no debe interpretarse como evidencia directa de causalidad.
+
+## Gráfico de dispersión y forma de la relación
+
+```{r dispersion-exploratoria}
+ggcp1<-ggplot(aes(Exportaciones, Venta), data = data) + 
+  geom_point(color='blue',fill='blue',alpha=1/2,size=2,position = 'jitter')
+ggcp1
+```
+
+El gráfico de dispersión ubica correctamente las exportaciones en el eje X, como variable independiente, y la tasa de cambio de venta en el eje Y, como variable dependiente. Visualmente se aprecia una pendiente positiva, aunque existe dispersión considerable alrededor de una posible recta de regresión.
+
+```{r grafico-regresion-lineal}
+ggplot(data, aes(x = Exportaciones, y = Venta)) +
+  geom_point(
+    color = "steelblue",
+    alpha = 0.7,
+    size = 2
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "darkred",
+    linewidth = 1
+  ) +
+  labs(
+    title = "Tasa de cambio de venta vs. exportaciones",
+    x = "Exportaciones mensuales (millones de USD)",
+    y = "Tasa de cambio de venta (pesos por USD)"
+  ) +
+  theme_minimal()
+```
+
+La recta ajustada presenta una pendiente positiva. No obstante, la amplitud de la banda de confianza y la dispersión de los puntos sugieren que las exportaciones, por sí solas, no explican completamente el comportamiento mensual de la tasa de cambio.
+
+## Distribución de las variables
+
+```{r histograma-exportaciones}
+plot1 <- ggplot(data, aes(x = Exportaciones)) +
+  geom_histogram(
+    color = "white",
+    fill = "steelblue",
+    binwidth = 100
+  ) +
+  scale_x_continuous(
+    breaks = seq(800, 2000, 100),
+    limits = c(800, 2000)
+  ) +
+  labs(
+    title = "Distribución de las exportaciones",
+    x = "Exportaciones (millones de USD)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+plot1
+```
+
+```{r histograma-tasa-cambio}
+plot2 <- ggplot(data, aes(x = Venta)) +
+  geom_histogram(
+    color = "white",
+    fill = "darkred",
+    binwidth = 1
+  ) +
+  scale_x_continuous(
+    breaks = seq(50, 65, 5),
+    limits = c(50, 65)
+  ) +
+  labs(
+    title = "Distribución de la tasa de cambio",
+    x = "Tasa de cambio (pesos por USD)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+plot2
+```
+
+Las exportaciones se concentran principalmente entre aproximadamente 1,000 y 1,300 millones de USD, aunque existen meses con valores más altos. Por otro lado, la tasa de cambio se concentra alrededor de los valores medios del período, con un rango aproximado de 55 a 63 pesos por dólar.
+
+# Modelo de regresión lineal simple
+
+```{r modelo-lineal}
+m1 <- lm(Venta~Exportaciones, data = data)
+summary(m1)
+#Tiene buenos residuos con respecto al valor de las variables.
+#Paso la prueba de hipoteis, incluso menor a un alpha de 0.01
+#El R cuadrado no es muy bueno porque no se acerca a uno (1).
+#Buen p.value de la prueba anova
+
+residuals(m1)
+```
+
+La ecuación estimada del modelo es:
+
+\[
+\widehat{Venta} = 50.1655 + 0.007382(Exportaciones)
+\]
+
+El coeficiente de `Exportaciones` es positivo (**0.007382**) y estadísticamente significativo (*p* = 0.00933). A un nivel de significancia de 1 %, se rechaza la hipótesis nula de que el coeficiente de las exportaciones sea igual a cero. En esta muestra, un aumento de 100 millones de USD en las exportaciones se asocia con un aumento estimado de aproximadamente **0.74 pesos dominicanos por dólar** en la tasa de cambio de venta promedio mensual.
+
+El coeficiente de determinación es \(R^2 = 0.1987\). Por tanto, las exportaciones mensuales explican aproximadamente el **19.87 %** de la variación observada en la tasa de cambio de venta. El modelo detecta una relación lineal positiva estadísticamente significativa, pero su poder explicativo es limitado. Es razonable considerar que otras variables también influyen en la tasa de cambio, tales como las importaciones, remesas, turismo, flujos de inversión, reservas internacionales y medidas de política monetaria.
+
+# Superposición de los datos y el modelo ajustado
+
+```{r superposicion-modelo}
+ggcp1<-ggcp1+stat_smooth(method="lm",col="red")+
+  ggtitle("Superposición de los datos al modelo ajustado")  
+ggcp1
+```
+
+La línea roja representa la recta de regresión ajustada. La dispersión de los puntos alrededor de esta línea confirma que existe una relación positiva entre las variables, aunque también evidencia que hay variabilidad no explicada por las exportaciones mensuales.
+
+# Diagnóstico de residuos y normalidad
+
+```{r residuos-histograma}
+hist(m1$residuals,col="green", breaks = 100)
+rug(m1$residuals)
+res_m1<-residuals(m1)
+head(res_m1)
+```
+
+El histograma permite observar la distribución de los residuos. Debido a que la muestra es pequeña (33 observaciones) y el histograma utiliza muchos intervalos, el gráfico QQ resulta más apropiado para evaluar visualmente la normalidad de los residuos.
+
+```{r grafico-qq-residuos}
+qqnorm(m1$residuals,
+       main = "Gráfico QQ de los residuos")
+qqline(m1$residuals,
+       col = "darkred",
+       lwd = 2)
+```
+
+En el gráfico QQ, la mayor parte de los puntos se ubica cerca de la línea de referencia, sin desviaciones extremas o un patrón sistemático muy marcado. Por ello, la suposición de normalidad de los residuos parece razonable para esta muestra. Esta conclusión se basa en la evidencia gráfica y debe interpretarse de forma prudente debido al tamaño de la muestra.
+
+# Prueba global del modelo
+
+```{r anova-modelo}
+anova(m1,test="Chisq")
+```
+
+La prueba ANOVA presenta un valor *p* de aproximadamente 0.0093, consistente con la significancia del coeficiente de `Exportaciones`. En consecuencia, el modelo lineal con exportaciones ofrece un ajuste estadísticamente superior a un modelo sin variable explicativa.
+
+# Conclusión
+
+Para el período enero de 2023 a septiembre de 2025, se encontró una relación lineal positiva y estadísticamente significativa entre las exportaciones mensuales y la tasa de cambio de venta promedio mensual del dólar estadounidense. El modelo estima que, en promedio, un aumento en las exportaciones se asocia con un incremento en la tasa de cambio de venta.
+
+Sin embargo, el valor de \(R^2\) indica que las exportaciones explican una proporción limitada de la variación de la tasa de cambio. Por ello, el modelo es útil para evidenciar una asociación estadística dentro de la muestra, pero no basta para afirmar una relación causal ni para explicar completamente la dinámica cambiaria del país.
+
+# Código exploratorio conservado
+
+El siguiente bloque conserva código exploratorio utilizado durante el proceso. Se mantiene para documentar el procedimiento original, pero no se utiliza como gráfico principal del informe porque incorpora un suavizado LOESS y, al añadir posteriormente una recta lineal, puede mostrar dos ajustes diferentes en una misma figura.
+
+```{r codigo-exploratorio, eval=FALSE}
+g1<-qplot(Exportaciones, Venta, data = data, geom = c("point", "smooth"),span=0.2)
+g1
+
+g1<-g1+stat_smooth(method="lm",col="red")+
+  ggtitle("Superposición de los datos al modelo ajustado")
+g1
+```
